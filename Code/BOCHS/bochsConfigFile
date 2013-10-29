@@ -1,0 +1,35 @@
+# Configuration file for BOCSH. Created by taking help from the man pages.
+
+# Amount of physical memory to simulate (in MB)
+megs:64
+
+# The ROM BIOS controls what the PC does when it first powers  on.
+# We are using a precompiled BIOS from the distribution BIOS-bochs-latest. 
+romimage: file=/usr/share/bochs/BIOS-bochs-latest
+vgaromimage: file=$BXSHARE/VGABIOS-lgpl-latest
+
+# Enabling the floopy drive. We are giving pathname of a floppy image file.
+# Floppya  is the  first drive, and  floppyb is the  second drive.
+# To boot from a floppy,  floppya  should  point  to  a bootable disk. 
+floppya: 1_44=/dev/loop0, status=inserted
+
+# boot defines the boot sequence. We can specify up to 3 boot drives :
+# ’floppy’,  ’disk’  or  ’cdrom’
+boot: floppy
+
+# Log file to generate BOCSH related logs.
+log: ../BOCHS/bochsLog.txt
+
+# Enable ps2 mouse for simulation
+#mouse: enabled=1, type=imps2
+mouse : enabled=0
+
+# Adding a display library to avoid crash becuase of a bug in Ubuntu 13.04
+display_library: sdl
+
+clock: sync=realtime
+#CPU frequency to simulate (Instructions per seconds)
+cpu: ips=1000000
+
+
+

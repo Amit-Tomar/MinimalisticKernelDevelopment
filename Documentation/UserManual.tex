@@ -1,0 +1,576 @@
+\documentclass[11pt]{article}
+%Gummi|061|=)
+
+\usepackage{xcolor}
+\usepackage{listings}
+
+\title{\textbf{A report on\linebreak Minimalistic Kernel development in C} }
+\author{ 		
+        {Prepared by : Amit Tomar}\\
+        		\vspace{ 2 mm}\\		
+		\textbf{Team} \\	
+				\vspace{ -4 mm}\\					
+		amit.tomar \\
+		(MT2013008) \\
+		\vspace{ -3 mm}\\		
+		ashutosh.vyas\\								     
+		(MT2013031) \\		
+				\vspace{ -3 mm}\\					
+		pankajkumar.aggarwal\\
+		(MT2013096) \\
+				\vspace{ -3 mm}\\		
+		rakesh.rajpurohit\\
+		(MT2013122) \\
+						\vspace{ -2 mm}\\		
+		\textbf{@iiitb.org}}
+		
+\date{20 - Sep - 2013}
+
+\begin{document}
+
+\maketitle
+
+
+
+\section{Before you start}
+
+You are now using Gummi 0.6.1. Many new exciting features have been added to the 0.6 series. The document editor is now a tabbed instance, allowing multiple documents to be worked on simultaneously. Using the new projects menu, you can group files together for easy access. 
+
+Support for two high-level {\LaTeX} building systems, \emph{rubber}\footnote{https://launchpad.net/rubber/} \& \emph{latexmk}\footnote{http://www.phys.psu.edu/{\textasciitilde}collins/software/latexmk-jcc/} has been added to this release as well. Your preferred typesetter can be configured through the Compilation tab in the Preferences menu. Typesetters that are not installed on your system will not be selectable. 
+
+Added for your viewing convenience is a continuous preview mode for the PDF. This mode is enabled by default, but can also be disabled through the \emph{(View $\rightarrow$ Page layout in preview)} menu. Complementary to this feature is SyncTeX integration, which allows you to synchronize the position in your editor with the PDF preview. 
+
+\section{The boot process}
+
+To make starting an OS easy, we will be using a lot of existing parts, GRUB will be the bootloader, and the kernel will be in ELF format. GRUB (a Multiboot compliant boot loader) puts the system in to the correct state for your kernel to start executing. This includes enabling the A20 line (to give you access to all available memory addresses) and putting the system in to 32-bit Protected Mode, giving you access to a theoretical 4GiB of memory. We will not use a flat binary but a kernel in ELF format, so that we have a lot of control to tell GRUB where to load which part in memory.
+
+Booting the Operating System
+
+To start the operating system, an existing piece of software will be needed to load it. This is called the bootloader and in this tutorial we will be using GRUB. Writing your own bootloader is an advanced subject, but it is commonly done. We'll later configure the bootloader, but the operating system needs to handle when the bootloader passes control to it. The kernel is passed a very minimal environment, in which the stack is not set up yet, virtual memory is not yet enabled, hardware is not initialized, and so on.
+The first task we will deal with is how the bootloader starts the kernel. We are lucky because there exists a Multiboot Standard, which describes an easy interface between the bootloader and the operating system kernel. It works by putting a few magic values in some global variables (known as a multiboot header), which is searched for by the bootloader. When it sees these values, it recognizes the kernel as multiboot compatible and it knows how to load us, and it can even forward us important information such as memory maps, but we won't need that yet.
+Since there is no stack yet and we need to make sure the global variables are set correctly, we will do this in assembly.
+
+Master Boot Record
+
+A device is "bootable" if it carries a boot sector with the byte sequence 0x55, 0xAA in bytes 511 and 512 respectively. When the BIOS finds such a boot sector, it is loaded into memory at a specific location; this is usually 0x0000:0x7c00 (segment 0, address 0x7c00). However, some BIOS' load to 0x7c0:0x0000 (segment 0x07c0, offset 0), which resolves to the same physical address, but can be surprising.
+When the wrong CS:IP pair is assumed, absolute near jumps will not work properly, and any code like mov ax,cs; mov ds,ax will result in unexpected variable locations. A good practice is to enforce CS:IP at the very start of your boot sector.
+
+On a hard drive, the so-called Master Boot Record (MBR) holds executable code at offset 0x0000 - 0x01bd, followed by table entries for the four primary partitions, using sixteen bytes per entry (0x01be - 0x01fd), and the two-byte signature (0x01fe - 0x01ff).
+
+Linking the Kernel
+
+We can now assemble boot.s and compile kernel.c. This produces two object files that each contain part of the kernel. To create the full and final kernel we will have to link these object files into the final kernel program, usable by the bootloader. When developing user-space programs, your toolchain ships with default scripts for linking such programs. However, these are unsuitable for kernel development and we need to provide our own customized linker script.
+
+\section{The Interrupt Descriptor Table}
+
+The GDT and the IDT are descriptor tables. They are arrays of flags and bit values describing the operation of either the segmentation system (in the case of the GDT), or the interrupt vector table (IDT).
+
+There are times when you want to interrupt the processor. You want to stop it doing what it is doing, and force it to do something different. An example of this is when an timer or keyboard interrupt request (IRQ) fires. An interrupt is like a POSIX signal - it tells you that something of interest has happened. The processor can register 'signal handlers' (interrupt handlers) that deal with the interrupt, then return to the code that was running before it fired. Interrupts can be fired externally, via IRQs, or internally, via the 'int n' instruction. There are very useful reasons for wanting to do fire interrupts from software, but that's for another chapter!
+
+The Interrupt Descriptor Table tells the processor where to find handlers for each interrupt. It is very similar to the GDT. It is just an array of entries, each one corresponding to an interrupt number. There are 256 possible interrupt numbers, so 256 must be defined. If an interrupt occurs and there is no entry for it (even a NULL entry is fine), the processor will panic and reset.
+
+4.3.1. Faults, traps and exceptions
+
+The processor will sometimes need to signal your kernel. Something major may have happened, such as a divide-by-zero, or a page fault. To do this, it uses the first 32 interrupts. It is therefore doubly important that all of these are mapped and non-NULL - else the CPU will triple-fault and reset (bochs will panic with an 'unhandled exception' error).
+
+The special, CPU-dedicated interrupts are shown below.
+
+0 - Division by zero exception
+1 - Debug exception
+2 - Non maskable interrupt
+3 - Breakpoint exception
+4 - 'Into detected overflow'
+5 - Out of bounds exception
+6 - Invalid opcode exception
+7 - No coprocessor exception
+8 - Double fault (pushes an error code)
+9 - Coprocessor segment overrun
+10 - Bad TSS (pushes an error code)
+11 - Segment not present (pushes an error code)
+12 - Stack fault (pushes an error code)
+13 - General protection fault (pushes an error code)
+14 - Page fault (pushes an error code)
+15 - Unknown interrupt exception
+16 - Coprocessor fault
+17 - Alignment check exception
+18 - Machine check exception
+19-31 - Reserved
+
+ interrupt.s
+
+Great! We've got code that will tell the CPU where to find our interrupt handlers - but we haven't written any yet!
+
+When the processor receives an interrupt, it saves the contents of the essential registers (instruction pointer, stack pointer, code and data segments, flags register) to the stack. It then finds the interrupt handler location from our IDT and jumps to it.
+
+Now, just like POSIX signal handlers, you don't get given any information about what interrupt was called when your handler is run. So, unfortunately, we can't just have one common handler, we must write a different handler for each interrupt we want to handle. This is pretty crap, so we want to keep the amount of duplicated code to a minimum. We do this by writing many handlers that just push the interrupt number (hardcoded in the ASM) onto the stack, and call a common handler function.
+
+That's all gravy, but unfortunately, we have another problem - some interrupts also push an error code onto the stack. We can't call a common function without a common stack frame, so for those that don't push an error code, we push a dummy one, so the stack is the same.
+
+Interrupt Service Routines
+
+Interrupt Service Routines, or ISRs, are used to save the current processor state and set up the appropriate segment registers needed for kernel mode before the kernel's C-level interrupt handler is called. This can all be handled in about 15 or 20 lines of assembly language, including calling our handler in C. We need to also point the correct entry in the IDT to the correct ISR in order to handle the right exception.
+
+An Exception is a special case that the processor encounters when it cannot continue normal execution. This could be something like dividing by zero: The result is an unknown or non-real number, so the processor will cause an exception so that the kernel can stop that process or task from causing any problems. If the processor finds that a program is trying to access a piece of memory that it shouldn't, it will cause a General Protection Fault. When you set up paging, the processor causes a Page Fault, but this is recoverable: you can map a page in memory to the faulted address - but that's for another tutorial.
+
+The first 32 entries in the IDT correspond to Exceptions that can possibly be generated by the processor, and therefore need to be handled. Some exceptions will push another value onto the stack: an Error Code value which is specific to the exception caused.
+
+Exception  Description	 Error Code?
+0	Division By Zero Exception	No
+1	Debug Exception	No
+2	Non Maskable Interrupt Exception	No
+3	Breakpoint Exception	No
+4	Into Detected Overflow Exception	No
+5	Out of Bounds Exception	No
+6	Invalid Opcode Exception	No
+7	No Coprocessor Exception	No
+8	Double Fault Exception	Yes
+9	Coprocessor Segment Overrun Exception	No
+10	Bad TSS Exception	Yes
+11	Segment Not Present Exception	Yes
+12	Stack Fault Exception	Yes
+13	General Protection Fault Exception	Yes
+14	Page Fault Exception	Yes
+15	Unknown Interrupt Exception	No
+16	Coprocessor Fault Exception	No
+17	Alignment Check Exception (486+)	No
+18	Machine Check Exception (Pentium/586+)	No
+19 to 31	Reserved Exceptions	No
+As mentioned earlier, some exceptions push an error code onto the stack. To decrease the complexity, we handle this by pushing a dummy error code of 0 onto the stack for any ISR that doesn't push an error code already. This keeps a uniform stack frame. To track which exception is firing, we also push the interrupt number on the stack. We use the assembler opcode 'cli' to disable interrupts and prevent an IRQ from firing, which could possibly otherwise cause conflicts in our kernel. To save space in the kernel and make a smaller binary output file, we get each ISR stub to jump to a common 'isr\_common\_stub'. The 'isr\_common\_stub' will save the processor state on the stack, push the current stack address onto the stack (gives our C handler the stack), call our C 'fault\_handler' function, and finally restore the state of the stack. Add this code to 'start.asm' in the provided space, filling out all 32 ISRs:
+
+
+Great! We've got code that will tell the CPU where to find our interrupt handlers - but we haven't written any yet!
+
+When the processor receives an interrupt, it saves the contents of the essential registers (instruction pointer, stack pointer, code and data segments, flags register) to the stack. It then finds the interrupt handler location from our IDT and jumps to it.
+
+Now, just like POSIX signal handlers, you don't get given any information about what interrupt was called when your handler is run. So, unfortunately, we can't just have one common handler, we must write a different handler for each interrupt we want to handle. This is pretty crap, so we want to keep the amount of duplicated code to a minimum. We do this by writing many handlers that just push the interrupt number (hardcoded in the ASM) onto the stack, and call a common handler function.
+
+That's all gravy, but unfortunately, we have another problem - some interrupts also push an error code onto the stack. We can't call a common function without a common stack frame, so for those that don't push an error code, we push a dummy one, so the stack is the same.
+
+This piece of code is our common interrupt handler. It firstly uses the 'pusha' command to push all the general purpose registers on the stack. It uses the 'popa' command to restore them at the end. It also gets the current data segment selector and pushes that onto the stack, sets all the segment registers to the kernel data selector, and restores them afterwards. This won't actually have an effect at the moment, but it will when we switch to user-mode. Notice it also calls a higher-level interrupt handler - isr\_handler.
+
+When an interrupt fires, the processor automatically pushes information about the processor state onto the stack. The code segment, instruction pointer, flags register, stack segment and stack pointer are pushed. The IRET instruction is specifically designed to return from an interrupt. It pops these values off the stack and returns the processor to the state it was in originally.
+
+
+\section{The Screen}
+
+Modern display monitors support various modes viz :
+
+Your kernel gets booted by GRUB in text mode. That is, it has available to it a framebuffer (area of memory) that controls a screen of characters (not pixels) 80 wide by 25 high. This will be the mode your kernel will operate in until your get into the world of VESA (which will not be covered in this tutorial).
+
+The area of memory known as the framebuffer is accessible just like normal RAM, at address 0xB8000. It is important to note, however, that it is not actually normal RAM. It is part of the VGA controller's dedicated video memory that has been memory-mapped via hardware into your linear address space. This is an important distinction.
+
+----- 
+
+Display Modes
+
+Monitors can display both text and graphics and have different techniques and memory requirements for each. Consequently, video adapters have two display modes: text and graphics.
+In text mode, the screen is divided into columns and rows, typically 80 columns by 25 rows, and a character is displayed at each screen position (character cell).
+In graphics mode, the screen is again divided into columns and rows, and each screen position is called a pixel (short for picture element). A picture can be displayed by specifying the color of each pixel on the screen.
+Text Modes
+
+    Mode   Description                 Adapters
+
+3    80 x 25    16-color text     VGA  (most frequently used mode for text display)
+Graphics Modes
+
+    Mode(hex) Description             Adapters
+
+12       640 x 480   4 color     VGA
+13       320 x 200  256 color    VGA   
+Video Display Addresses
+
+B800:0000h	  Standard display address for text mode
+
+Text Mode Programming
+
+Positions on the screen are referenced using (column, row) coordinates. The upper left corner has coordinates (0,0). For an 80 x 25 display, the rows are 0-24 and the columns are 0-79.
+
+Table of some 80 x 25 screen positions
+Position              Decimal      Hexadecimal
+Upper left corner     (0,0)        (0,0)
+Lower left corner     (0,24)       (0,18)
+Upper right corner    (79,0)       (4F,0)
+Lower right corner    (79,24)      (4F,18)
+Center screen         (39,12)      (27,C)
+The character displayed at a screen position is specified by the contents of a WORD in the display memory. The low byte of the word contains the character's ASCII code; the high byte contains its attribute, which tells how the character will be displayed (its color, whether it's blinking, underlined, and so on).
+
+Display Pages
+
+Graphics adapters can store several screens of text data (this is because displaying one screen of graphics requires significantly more memory than text). To fully use the display memory, it is divided into display pages. One display page can hold the data for one screen. The pages are numbered starting with 0; the number of pages available depends on the adapter and the display mode selected.
+
+For 80 x 25 text mode, each display page is 4 KB.  Display page 0 for text mode starts at address B800:0000h. 
+
+The active display page is the page currently being displayed. For 80 x 25 text mode, the memory requirement is 80 x 25 = 2000 words = 4000 bytes (i.e., the display does not use all of the 4 KB or 4096 bytes in the display page memory).
+
+The video controller displays the first WORD in the active display page at the upper left corner of the screen (0,0), then displays the next WORD at (1,0), etc., displaying the screen row by row. The screen display can be looked at as the image of a two-dimensional array.
+
+The Attribute Byte
+
+The high byte of the word that specifies a display character is called the attribute byte. It describes the color and intensity of the character, the background color, and whether the character is blinking and/or underlined.
+
+16-Color Display
+
+Attribute Byte:
+
+Bit\#	7	6	5	4	3	2	1	0
+Attr	BL	R	G	B	IN	R	G	B
+Attributes:
+
+     Bit \#    Attribute
+
+0-2      character color (foreground color)
+3        intensity 
+4-6      background color
+7        blinking
+
+E.g., to display a red character on a blue background, the attribute byte would be:
+
+0001 0100 = 14h
+
+If the attribute byte is: 0011 0101 = 35h
+
+Uses blue + green (cyan) in the background and red+blue (magenta) in the foreground, so the character displayed would be magenta on a cyan background.
+
+If the intensity bit (bit 3) is 1, the foreground color is lightened (brightened). If the blinking bit (bit 7) is 1, the character turns on and off.
+
+Sixteen Color Text Display
+
+Basic Colors                 Bright Colors
+
+I R G B     Color      I R G B     Color 
+0 0 0 0      black     1 0 0 0     gray
+0 0 0 1      blue      1 0 0 1     light blue
+0 0 1 0      green     1 0 1 0     light green
+0 0 1 1      cyan      1 0 1 1     light cyan
+0 1 0 0      red       1 1 0 0     light red
+0 1 0 1      magenta   1 1 0 1     lt magenta
+0 1 1 0      brown     1 1 1 0     yellow
+0 1 1 1      white     1 1 1 1     brt white
+foreground colors can be either basic or bright
+background colors can only be basic colors.
+
+\section {Limitations}
+
+1. All the keys on keyboard are not handled. Keyboard lights, right hand side keys etc are not handled.
+2. When an exception is raised, system halts completely. Not able to recover from the exception.
+
+\section {The Keyboard}
+
+The Keyboard
+
+A keyboard is the most common way for a user to give a computer input, therefore it is vital that you create a driver of some sort for handling and managing the keyboard. When you get down to it, getting the basics of the keyboard isn't too bad. Here we will show the basics: how to get a key when it is pressed, and how to convert what's called a 'scancode' to standard ASCII characters that we can understand properly.
+
+A scancode is simply a key number. The keyboard assigns a number to each key on the keyboard; this is your scancode. The scancodes are numbered generally from top to bottom and left to right, with some minor exceptions to keep layouts backwards compatible with older keyboards. You must use a lookup table (an array of values) and use the scancode as the index into this table. The lookup table is called a keymap, and will be used to translate scancodes into ASCII values rather quickly and painlessly. One last note about a scancode before we head into code is that if bit 7 is set (test with 'scancode \& 0x80'), then this is the keyboard's way of telling us that a key was just released. Create yourself a 'kb.h' and do all your standard proceedures like adding a line for GCC and adding a file to LD's command line.
+
+Converting a scancode to an ASCII value is easy with this:
+
+mychar = kbdus[scancode];
+
+Note that although we leave comments for the function keys and shift/control/alt, we leave them as 0's in the array: You need to think up some random values such as ASCII values that you normally wouldn't use so that you can trap them. I'll leave this up to you, but you should keep a global variable to be used as a key status variable. This keystatus variable will have 1 bit set for ALT, one for CONTROL, and one for SHIFT. It's also a good idea to have one for CAPSLOCK, NUMLOCK, and SCROLLLOCK. This tutorial will explain how to set the keyboard lights, but we will leave it up to you to actually write the code for it.
+
+The keyboard is attached to the computer through a special microcontroller chip on your mainboard. This keyboard controller chip has 2 channels: one for the keyboard, and one for the mouse. Also note that it is through this keyboard controller chip that you would enable the A20 address line on the processor to allow you to access memory past the 1MByte mark (GRUB enables this, you don't need to worry about it). The keyboard controller, being a device accessible by the system, has an address on the I/O bus that we can use for access and control. The keyboard controller has 2 main registers: a Data register at 0x60, and a Control register at 0x64. Anything that the keyboard wants to send the computer is stored into the Data register. The keyboard will raise IRQ1 whenever it has data for us to read. Observe:
+
+\section { Interrupt requests }
+
+IRQs and PICs
+
+Interrupt Requests or IRQs are interrupts that are raised by hardware devices. Some devices generate an IRQ when they have data ready to be read, or when they finish a command like writing a buffer to disk, for example. It's safe to say that a device will generate an IRQ whenever it wants the processor's attention. IRQs are generated by everything from network cards and sound cards to your mouse, keyboard, and serial ports.
+
+Any IBM PC/AT Compatible computer (anything with a 286 and later processor) has 2 chips that are used to manage IRQs. These 2 chips are known as the Programmable Interrupt Controllers or PICs. These PICs also go by the name '8259'. One 8259 acts as the 'Master' IRQ controller, and one is the 'Slave' IRQ controller. The slave is connected to IRQ2 on the master controller. The master IRQ controller is connected directly to the processor itself, to send signals. Each PIC can handle 8 IRQs. The master PIC handles IRQs 0 to 7, and the slave PIC handles IRQs 8 to 15. Remember that the slave controller is connected to the primary controller through IRQ2: This means that every time an IRQ from 8 to 15 occurs, IRQ2 fires at exactly the same time.
+
+When a device signals an IRQ, remember that an interrupt is generated, and the CPU pauses whatever it's doing to call the ISR to handle the corresponding IRQ. The CPU then performs whatever necessary action (like reading from the keyboard, for example), and then it must tell the PIC that the interrupt came from that the CPU has finished executing the correct routine. The CPU tells the right PIC that the interrupt is complete by writing the command byte 0x20 in hex to the command register for that PIC. The master PIC's command register exists at I/O port 0x20, while the slave PIC's command register exists at I/O port 0xA0.
+
+Before we get into writing our IRQ management code, we need to also know that IRQ0 to IRQ7 are originally mapped to IDT entries 8 through 15. IRQ8 to IRQ15 are mapped to IDT entries 0x70 through 0x78. If you remember the previous section of this tutorial, IDT entries 0 through 31 are reserved for exceptions. Fortunately, the Interrupt Controllers are 'programmable': You can change what IDT entries that their IRQs are mapped to. For this tutorial, we will map IRQ0 through IRQ15 to IDT entries 32 through 47. To start us off, we must add some ISRs to 'start.asm' in order to service our interrupts:
+
+Just like each section of this tutorial before this one, we need to create a new file called 'irq.c'. Edit 'build.bat' to add the appropriate line to get GCC to compile to source, and also remember to add a new object file to get LD to link into our kernel.
+
+All devices that are interrupt-capable have a line connecting them to the PIC (programmable interrupt controller). The PIC is the only device that is directly connected to the CPU's interrupt pin. It is used as a multiplexer, and has the ability to prioritise between interrupting devices. It is, essentially, a glorified 8-1 multiplexer. At some point, someone somewhere realised that 8 IRQ lines just wasn't enough, and they daisy-chained another 8-1 PIC beside the original. So in all modern PCs, you have 2 PICs, the master and the slave, serving a total of 15 interruptable devices (one line is used to signal the slave PIC).
+The other clever thing about the PIC is that you can change the interrupt number it delivers for each IRQ line. This is referred to as remapping the PIC and is actually extremely useful. When the computer boots, the default interrupt mappings are:
+
+IRQ 0..7 - INT 0x8..0xF
+IRQ 8..15 - INT 0x70..0x77
+This causes us somewhat of a problem. The master's IRQ mappings (0x8-0xF) conflict with the interrupt numbers used by the CPU to signal exceptions and faults (see last chapter). The normal thing to do is to remap the PICs so that IRQs 0..15 correspond to ISRs 32..47 (31 being the last CPU-used ISR).
+
+\section {The programmable Interval timer}
+
+The PIT: A System Clock
+
+The Programmable Interval Timer (PIT, model 8253 or 8254), also called the System Clock, is a very useful chip for accurately generating interrupts at regular time intervals. The chip itself has 3 channels: Channel 0 is tied to is tied to IRQ0, to interrupt the CPU at predictable and regular times, Channel 1 is system specific, and Channel 2 is connected to the system speaker. As you can see, this single chip offers several very important services to the system.
+
+The only channels that you should every be concerned with are Channels 0 and 2. You may use Channel 2 in order to make the computer beep. In this section of the tutorial, we are only concerned with Channel 0 - mapped to IRQ0. This single channel of the timer will allow you to accurately schedule new processes later on, as well as allow the current task to wait for a certain period of time (as will be demonstrated shortly). By default, this channel of the timer is set to generate an IRQ0 18.222 times per second. It is the IBM PC/AT BIOS that defaults it to this. A reader of this tutorial has informed me that this 18.222Hz tick rate was used in order for the tick count to cycle at 0.055 seconds. Using a 16-bit timer tick counter, the counter will overflow and wrap around to 0 once every hour.
+
+To set the rate at which channel 0 of the timer fires off an IRQ0, we must use our outportb function to write to I/O ports. There is a Data register for each of the timer's 3 channels at 0x40, 0x41, and 0x42 respectively, and a Command register at 0x43. The data rate is actually a 'divisor' register for this device. The timer will divide it's input clock of 1.19MHz (1193180Hz) by the number you give it in the data register to figure out how many times per second to fire the signal for that channel. You must first select the channel that we want to update using the command register before writing to the data/divisor register. What is shown in the following two tables is the bit definitions for the command register, as well as some timer modes.
+
+7	6	5	4	3	1	0
+CNTR	RW	Mode	BCD
+CNTR - Counter  (0-2)
+RW - Read Write mode
+(1 = LSB, 2 = MSB, 3 = LSB then MSB)
+Mode - See right table
+BCD - (0 = 16-bit counter,
+1 = 4x BCD decade counters)
+Mode	Description
+0	Interrupt on terminal count
+1	Hardware Retriggerable one shot
+2	Rate Generator
+3	Square Wave Mode
+4	Software Strobe
+5	Hardware Strobe
+Bit definitions for 8253 and 8254 chip's Command Register located at 0x43
+To set channel 0's Data register, we need to select counter 0 and some modes in the Command register first. The divisor value we want to write to the Data register is a 16-bit value, so we will need to transfer both the MSB (Most Significant Byte) and LSB (Least Significant Byte) to the data register. This is a 16-bit value, we aren't sending data in BCD (Binary Coded Decimal), so the BCD field should be set to 0. Finally, we want to generate a Square Wave: Mode 3. The resultant byte that we should set in the Command register is 0x36. The above 2 paragraphs and tables can be summed up into this function. Use it if you wish, we won't use it in this tutorial to keep things simple. For accurate and easy timekeeping, I recommend setting to 100Hz in a real kernel.
+
+
+
+
+
+\section{Installing BOCHS}
+ 
+Go to the official sourceforge page of BOCHS and download the latest rpm package available there :
+ 
+\begin{lstlisting}
+ 
+http://sourceforge.net/projects/bochs/files/bochs/
+
+\end{lstlisting}
+
+\vspace {3mm}
+
+\noindent
+Ubuntu distro doesnt support rpm package installation directly, you can use the utility called alien to convert it into deb package : 
+\begin{lstlisting}
+
+# sudo apt-get install alien
+# sudo alien -k your_rpm_package.rpm
+
+\end{lstlisting}
+
+\vspace {3mm}
+
+\noindent
+Then right click and open the obtained deb package using the software centre provided by ubuntu to install the package.
+
+\section{References}
+ 
+ Following sources were referred before writing this documents to get the basic understanding of Kernel development process and approximate time it might require:
+ 
+\vspace {5 mm}
+ 
+\textbf{ General references about operating systems and LaTeX}
+ 
+ \begin{enumerate}
+ 
+ \item  {http://wiki.osdev.org/Bare\_Bones}
+ 
+ \item  {http://wiki.osdev.org/Category:Babystep}
+ 
+  \item    {http://www.osdever.net/bkerndev/index.php}
+  
+  \item    {http://www.osdever.net/tutorials/pdf/getting\_started.pdf}
+  
+  \item    {http://www.osdever.net/tutorials/pdf/comparison.pdf}
+ 
+  \item    {http://www.jamesmolloy.co.uk/index.html} 
+ 
+  \item    {http://www.nondot.org/sabre/os/articles} 
+  
+  \item    {http://www.wikihow.com/Make-a-Computer-Operating-System} 
+  
+  \item    {http://forums.devshed.com/c-programming-42/i-ve-written-a-small-os-kernel-and-i-have-388986.html}
+   
+  \item    {http://gusc.lv/2012/11/im-writing-my-own-os/} 
+    
+  \item    {http://www.brokenthorn.com/Resources/OSDev2.html} 
+  
+  \item   {http://joelgompert.com/OS/TableOfContents.htm}
+  
+  \item   {http://stackoverflow.com/questions/2195908/latex-multiple-linebreaks}
+  
+  \item  {http://techfreaks4u.com/blog/posts/kernel-development-from-scratch/}
+  
+  \item {http://wiki.osdev.org/Tutorials}
+  
+  \item  {http://tex.stackexchange.com/questions/81834/whats-the-best-way-to-typeset-c-codes-in-latex}
+  
+  \item  {http://stackoverflow.com/questions/741985/latex-source-code-listing-like-in-professional-books}
+  
+  \item  {http://www.personal.ceu.hu/tex/breaking.htm}
+      
+  \item  {http://en.wikibooks.org/wiki/LaTeX/Source-Code-Listings}
+  
+    \item {http://tex.stackexchange.com/questions/38829/remove-paragraph-indentation}
+  
+  \vspace {3 mm}
+  
+  \textbf{ References about the operating system boot process  }    
+  
+  \item  {http://www.cs.rutgers.edu/~pxk/416/notes/02-boot.html}
+  
+  \item  {http://en.wikipedia.org/wiki/Booting}
+  
+  \item  {http://www.tldp.org/LDP/intro-linux/html/sect\_04\_02.html}
+  
+  \item  {http://www.thegeekstuff.com/2011/02/linux-boot-process/}
+  
+  \item  {http://sansbound.com/2012/08/understanding-the-boot-process-charles-joseph/}
+  
+  \item  {http://kevinboone.net/boot.html}
+  
+  \item  {http://www.osdever.net/tutorials/pdf/bootsector\_hd.pdf}
+  
+  \item  {http://www.osdever.net/tutorials/brunmar/tutorial\_01.php}
+  
+  \vspace {3 mm}
+  
+  \textbf{ References about BOCHS  }    
+  
+  \item  {http://bochs.sourceforge.net/doc/docbook/user/bochsrc.html}  
+  
+  \item  {http://bochs.sourceforge.net/ }
+  
+  \item  {http://manpages.ubuntu.com/manpages/dapper/man5/bochsrc.5.html}
+  
+  \item  {  http://en.wikipedia.org/wiki/Bochs }
+  
+  \item  {  http://sourceforge.net/projects/bochs/files/bochs/2.6.2/ }
+  
+  \item  {  http://joeyh.name/code/alien/ }
+  
+  \vspace {3 mm}
+  
+  \textbf{ References about Makefiles and linker scripts }    
+  
+  
+  \item  {http://www.cs.duke.edu/courses/cps108/doc/makefileinfo/sample.html}
+  
+  \item  {http://stackoverflow.com/questions/3220277/what-do-the-makefile-symbols-and-mean}
+  
+  \item {http://www.gnu.org/software/make/manual/html\_node/Automatic-Variables.html}
+  
+  \item  {https://www.gnu.org/software/make/manual/html\_node/Catalogue-of-Rules.html}
+  
+  \item  {http://www.delorie.com/gnu/docs/binutils/ld\_6.html}
+ 
+ \vspace {3 mm}
+  
+  \textbf{ Mount and loop devices }
+ 
+  \item  {http://en.wikipedia.org/wiki/Loop\_device}
+  
+  \item  {http://www.linuxcommand.org/man\_pages/losetup8.html}
+  
+   \vspace {3 mm}
+  
+  \textbf{ Bootloaders, custom boot and GRUB in particular }
+  
+  \item {http://wiki.osdev.org/Boot\_Sequence}
+  
+  \item  {http://wiki.osdev.org/Diskless\_Booting}
+  
+  \item  {http://www.osdever.net/tutorials/grub.php}
+  
+  \item  {http://wiki.osdev.org/PS2\_Keyboard}
+  
+  \item {http://www.gnu.org/software/grub/manual/grub.html\#Embedded-data}
+  
+  \item {http://www.linuxquestions.org/questions/linux-general-1/how-to-export-customized-linux-os-to-usb-bootable-pendrive-4175443832/}
+  
+  \item  {http://rudd-o.com/linux-and-free-software/a-better-way-to-create-a-customized-ubuntu-live-usb-drive}
+  
+  \item  {https://help.ubuntu.com/community/BootFromUSB}
+  
+  \item  {http://workingdirectory.net/posts/2009/grub-on-usb/}
+  
+   \vspace {3 mm}
+  
+  \textbf{ Writing to the Video device }
+  
+  \item  {http://wiki.osdev.org/Printing\_to\_Screen}
+  
+  \item  {http://www.osdev.org/howtos/2/\#related}
+  
+  \item  {http://bytes.com/topic/c/answers/621381-plz-explain-outportb-function}
+  
+  \item  {http://wiki.osdev.org/Text\_Mode\_Cursor}  
+  
+  \item  {http://wiki.osdev.org/Memory\_Map\_(x86)\#BIO\_Data\_Area\_.28BDA.29}
+  
+  \item  {http://www.codeproject.com/Articles/39069/Beginning-Operating-System-Development-Part-Two}
+  
+  \item  {http://fleder44.net/312/notes/18Graphics/index.html}
+  
+  \item  {http://en.wikipedia.org/wiki/Text\_mode}
+  
+  
+  
+  
+    \vspace {3 mm}
+  
+  \textbf{ Miscellaneous topics }
+  
+  \item  {http://www.cs.umd.edu/class/sum2003/cmsc311/Notes/BitOp/bitshift.html}  
+  
+  \item  {http://wiki.osdev.org/A20\_Line}
+  
+  \item  {http://www.muppetlabs.com/~breadbox/software/tiny/teensy.html}
+  
+  \item  {http://stackoverflow.com/questions/2427011/what-is-the-difference-between-elf-files-and-bin-files}
+  
+  \item  {http://wiki.osdev.org/8259\_PIC}
+  
+  \item  {http://forum.osdev.org/viewtopic.php?f=1\&t=23473}
+  
+  \item  {http://stackoverflow.com/questions/4584089/assembler-push-pop-registers}
+  
+ \item   {http://wiki.answers.com/Q/What\_are\_segment\_registers}
+ 
+ \item   {http://reverseengineering.stackexchange.com/questions/2006/how-are-the-segment-registers-fs-gs-cs-ss-ds-es-used-in-i386-and-amd64}
+ 
+ \item  {http://stackoverflow.com/questions/9580383/gcc-fno-stack-protector-option}
+ 
+ \item  {http://stackoverflow.com/questions/16879434/why-do-these-c-struct-definitions-give-warnings-and-errors}
+ 
+ \item  {http://www.eecg.toronto.edu/~amza/www.mindsec.com/files/x86regs.html}
+ 
+ \item  {http://wiki.osdev.org/PIC}
+ 
+ \item  {http://reverseengineering.stackexchange.com/questions/2006/how-are-the-segment-registers-fs-gs-cs-ss-ds-es-used-in-i386-and-amd64}
+ 
+ \item  {http://stackoverflow.com/questions/10810203/what-is-the-fs-gs-register-intended-for}
+ 
+ \item  {http://wiki.osdev.org/Stack}
+ 
+ 
+
+      \vspace {3 mm}
+  
+  \textbf{ Interrupt Descriptor table }
+  
+
+  
+  \item  {http://wiki.osdev.org/Interrupt\_Descriptor\_Table}
+  
+      \vspace {3 mm}
+  
+  \textbf{ Assembly }
+  
+  \item  {http://www.cs.virginia.edu/~evans/cs216/guides/x86.html}
+  
+  \item  {http://en.wikipedia.org/wiki/JMP\_(x86\_instruction)}
+  
+  \item  {http://tigcc.ticalc.org/doc/gnuasm.html}
+  
+  \item  {http://www.tldp.org/HOWTO/html\_single/Assembly-HOWTO/}
+ 
+ \item  {http://docs.cs.up.ac.za/programming/asm/derick\_tut/}
+ 
+ \item  {http://www.plantation-productions.com/Webster/}
+  
+        \vspace {3 mm}
+  
+  \textbf{ Intel i386 Reference Manuals }
+  
+  \item  {http://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-manual-325462.pdf}
+ 
+ \end{enumerate} 
+
+\end{document}
