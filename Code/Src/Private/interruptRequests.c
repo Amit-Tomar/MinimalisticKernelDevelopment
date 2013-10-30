@@ -65,15 +65,17 @@ void common_interruptRequestServiceRoutine(registerStructure * registerInformati
     // Handle by appropriate function
     
     // putStringOnScreen("\nIRQ received\n");
+    
+    asm volatile("cli");
             
     if ( 32 == registerInformation->interruptNumber)
     {
-       timerInterruptHandlingRoutine(registerInformation);
+        timerInterruptHandlingRoutine(registerInformation);
     }
     
     else if ( 33 == registerInformation->interruptNumber )
     {
-		handleKeyPress(registerInformation);		
+		handleKeyPress(registerInformation);				
 	}
 
     /* If the IDT entry that was invoked was greater than 40 ( IRQ8 - IRQ15), 
@@ -85,4 +87,7 @@ void common_interruptRequestServiceRoutine(registerStructure * registerInformati
 
     // Master controller is to be notified always
     writeByteToPort(MASTER_PIC_COMMAND_REGISTER_IO_PORT, END_OF_INTERRUPT 	);
+    
+      asm volatile("sti");
+
 }

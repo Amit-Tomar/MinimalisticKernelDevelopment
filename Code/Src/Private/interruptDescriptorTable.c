@@ -1,9 +1,6 @@
 #include "../interruptDescriptorTable.h"
 
-/* Make a interrupt descriptor table with 256 entries. 256 entries are defined instead of 32 to handle situation
-   when an undefined IDT entry is requested. We have set the 'presence' bit for these descriptor as 0. 
-   This will cause an "Unhandled Interrupt" exception */
-
+// Interrupt descriptor table for all the possible 256 interrupts
 interruptDescriptor interruptDescriptorTable[256];
 interruptDescriptorTableLoader idtLoader;
 

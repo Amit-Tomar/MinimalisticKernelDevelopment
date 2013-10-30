@@ -28,7 +28,7 @@ int main()
   
   loadAndInitializeIDT();
   initialize_interruptServiceRoutine();
-  initialize_interruptRequestService();   
+  initialize_interruptRequestService();  
   
   asm volatile("sti");
   

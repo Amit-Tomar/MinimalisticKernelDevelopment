@@ -1,7 +1,8 @@
 #include "../displayDriver.h"
 #include "../utility.h"
 
-// Note : Screen is in the text mode and of the size MAX_CHARACTERS_IN_ROW characters (80) x MAX_CHARACTERS_IN_COLUMN (25) characters
+// Screen is in the text mode and of the size 
+// MAX_CHARACTERS_IN_ROW characters (80) x MAX_CHARACTERS_IN_COLUMN (25) characters
 
 textColor foregroundColor;
 textColor backgroundColor;
@@ -63,17 +64,26 @@ void putCharacterOnScreen ( unsigned char c )
 {
    unsigned short bytesToWrite = getBytesToWrite( c , backgroundColor, foregroundColor );
 
-   // Handle backspace
-   if (c == CODE_SEGMENT_INITIAL_VALUE && 0 != currentCursorPosition_X)
-   {
-       currentCursorPosition_X--;
-   }
-
    // Handle newline 
-   else if (c == '\n')
+   if ( '\n' == c )
    {
        currentCursorPosition_X = 0;
        currentCursorPosition_Y++;
+   }
+   
+   else if ( '\b' == c || 0x08 == c )
+   {
+	   if( 0 != currentCursorPosition_X )
+			-- currentCursorPosition_X;
+	   else 
+	   {
+			-- currentCursorPosition_Y;
+			currentCursorPosition_X = MAX_CHARACTERS_IN_ROW - 1 ;
+	   }
+	   
+	   bytesToWrite = getBytesToWrite( ' ', eBlack, eWhite );
+	   unsigned short frameBufferOffset = (currentCursorPosition_Y*MAX_CHARACTERS_IN_ROW) + currentCursorPosition_X;
+       *(ptr_FRAME_BUFFER+frameBufferOffset) = bytesToWrite ;
    }
    
    // Handle all other characters
@@ -149,7 +159,7 @@ void scrollDownScreen ()
            ptr_FRAME_BUFFER [i] = ptr_FRAME_BUFFER[i+MAX_CHARACTERS_IN_ROW];
        }
 
-	// Draw blank line
+	   // Draw blank line
        for (int i = (MAX_CHARACTERS_IN_COLUMN-1)*MAX_CHARACTERS_IN_ROW; i < MAX_CHARACTERS_IN_COLUMN*MAX_CHARACTERS_IN_ROW; i++)
        {
           ptr_FRAME_BUFFER [i] = bytesToWrite;
@@ -159,6 +169,7 @@ void scrollDownScreen ()
    }
 }
 
+// Get an appropriate byte to write based on the character, background and foreground colors
 unsigned short getBytesToWrite ( char c , textColor bgColor, textColor fgColor ) 
 {
     unsigned char higherByte = ( bgColor << 4 ) | (fgColor ) ;

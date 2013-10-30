@@ -36,11 +36,7 @@ extern void stub_interruptServiceRoutine29();
 extern void stub_interruptServiceRoutine30();
 extern void stub_interruptServiceRoutine31();
 
-/* We set the access
-*  flags to FLAG_VALUE. This means that the entry is present, is
-*  running in ring 0 (kernel level), and has the lower 5 bits
-*  set to the required '14', which is represented by 'E' in
-*  hex. */
+// Initializes all the interrupt service routines
 void initialize_interruptServiceRoutine()
 {
     fillInterruptDescriptorTable(0, (unsigned)stub_interruptServiceRoutine0,   CODE_SEGMENT_INITIAL_VALUE, FLAG_VALUE);
@@ -115,12 +111,10 @@ unsigned char *exception_messages[] =
     "Reserved exception"
 };
 
-/* All ISRs disable interrupts while they are being
-*  serviced as a 'locking' mechanism to prevent an IRQ from
-*  happening and messing up kernel data structures */
+// Common handler for all the interrupts generated
 void common_interruptServiceRoutine(registerStructure *registerInformation)
 {
-  setTextColor(eRed);
+    setTextColor(eRed);
     putStringOnScreen("\nAlert : EXCEPTION OCCURED \n");
     if (registerInformation->interruptNumber < 32)
     {    
