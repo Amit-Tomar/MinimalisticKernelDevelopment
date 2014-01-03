@@ -107,7 +107,7 @@ stub_interruptServiceRoutine%1:
     push byte 0                                   ; Push dummy error code for keeping the structure in sync
     push byte %1                                  ; Push the interrupt number
     jmp common_stub_interruptServiceRoutine
-%endmacro
+%endmacro 
 
 stub_interruptServiceRoutine 0
 stub_interruptServiceRoutine 1

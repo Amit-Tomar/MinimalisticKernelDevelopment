@@ -89,5 +89,4 @@ void common_interruptRequestServiceRoutine(registerStructure * registerInformati
     writeByteToPort(MASTER_PIC_COMMAND_REGISTER_IO_PORT, END_OF_INTERRUPT 	);
     
       asm volatile("sti");
-
 }
